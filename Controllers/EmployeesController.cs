@@ -12,13 +12,12 @@ namespace EmployeeManagement.Controllers
     {
         [HttpGet]
         public async Task<IActionResult> GetAll() =>
-         Ok(await db.Employees.ToListAsync());
+         Ok(await GetEmployeesByWithOrder());
 
         [HttpGet("{id}")]
-        public async Task<IActionResult> GetById(int id)
+        public async Task<IActionResult> GetById( int id)
         {
-            var employee = await db.Employees
-                .FirstOrDefaultAsync(e => e.Id == id);
+            var employee = await GetEmployeeByIDWithOrder(id);
             return employee is null ? NotFound() : Ok(employee);
         }
 
@@ -27,7 +26,7 @@ namespace EmployeeManagement.Controllers
         {
             db.Employees.Add(employee);
             await db.SaveChangesAsync();
-            return CreatedAtAction(nameof(GetById), new { id = employee.Id }, employee);
+            return CreatedAtAction(nameof(GetById), new { id = employee.Id });
         }
 
         [HttpPut("{id}")]
@@ -52,5 +51,41 @@ namespace EmployeeManagement.Controllers
             await db.SaveChangesAsync();
             return NoContent();
         }
+
+        #region Private Methods
+        private async Task<List<Employee>> GetEmployeesByWithOrder()
+        {
+            return await db.Employees.GroupJoin(
+                db.Orders,
+                employee => employee.Id,
+                orders => orders.EmployeeId,
+             (employee, customerOrder) => new Employee
+             {
+                 Id = employee.Id,
+                 Email = employee.Email,
+                 Name = employee.Name,
+                 CreatedAt = employee.CreatedAt,
+                 Orders = customerOrder.ToList()
+             }).ToListAsync();
+        }
+
+        private async Task<Employee> GetEmployeeByIDWithOrder(int empID)
+        {
+            return await db.Employees
+                .Where(x => x.Id == empID)
+                .GroupJoin(db.Orders,
+                employee => employee.Id,
+                orders => orders.EmployeeId,
+                    (employee, orders) => new Employee
+                    {
+                        Id = employee.Id,
+                        Email = employee.Email ?? string.Empty,
+                        CreatedAt = employee.CreatedAt,
+                        Name = employee.Name ?? string.Empty,
+                        Orders = orders != null ? orders.ToList() : new List<Order>()
+                    })
+                .FirstOrDefaultAsync() ?? new Employee();
+        }
+        #endregion
     }
 }
