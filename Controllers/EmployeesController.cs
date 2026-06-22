@@ -160,9 +160,116 @@ namespace EmployeeManagement.Controllers
             return NoContent();
         }
 
+        #region N+1 problems With Solution
+        // ❌ WRONG — N+1 problem
+        // 1 query to get employees + 1 query PER employee to get orders
+        // 100 employees = 101 queries fired
+        [HttpGet("n-plus-one-bad")]
+        public async Task<IActionResult> GetAllBad()
+        {
+            var employees = await db.Employees.ToListAsync();   // query 1
+
+            var result = new List<object>();
+            foreach (var emp in employees)
+            {
+                // EF fires a new SELECT for each employee here
+                var orders = await db.Orders
+                    .Where(o => o.EmployeeId == emp.Id)
+                    .ToListAsync();                             // query 2, 3, 4 ... N+1
+
+                result.Add(new { emp.Name, OrderCount = orders.Count });
+            }
+
+            return Ok(result);
+        }
+
+        // ✅ FIX 1 — Use Include (single JOIN query)
+        [HttpGet("fix-include")]
+        public async Task<IActionResult> GetAllWithInclude()
+        {
+            var result = await db.Employees
+                .AsNoTracking()
+                .Include(e => e.Orders)                         // one query with LEFT JOIN
+                .Select(e => new
+                {
+                    e.Name,
+                    OrderCount = e.Orders.Count
+                })
+                .ToListAsync();
+
+            return Ok(result);
+        }
+
+        // ✅ FIX 2 — Use projection (most efficient — no entity load at all)
+        [HttpGet("fix-projection")]
+        public async Task<IActionResult> GetAllWithProjection()
+        {
+            // EF translates Orders.Count directly to COUNT(*) in SQL
+            // no Orders data transferred at all
+            var result = await db.Employees
+                .AsNoTracking()
+                .Select(e => new
+                {
+                    e.Name,
+                    OrderCount = e.Orders.Count,               // → COUNT(*)
+                    TotalAmount = e.Orders.Sum(o => o.TotalAmount)
+                })
+                .ToListAsync();
+
+            return Ok(result);
+        }
+        #endregion
+
+        #region Bulk Operations
+        // ❌ SLOW — loads all entities into memory, then updates one by one
+        // 1000 employees = 1000 separate UPDATE statements
+        [HttpPatch("deactivate-department-slow")]
+        public async Task<IActionResult> DeactivateDepartmentSlow(string department)
+        {
+            var employees = await db.Employees
+                .Where(e => e.Department == department)
+                .ToListAsync();                             // loads ALL into memory
+
+            foreach (var emp in employees)
+                emp.IsActive = false;                       // update each one
+
+            await db.SaveChangesAsync();                    // N UPDATE statements
+            return NoContent();
+        }
+
+        // ✅ FAST — ExecuteUpdate (EF 7+)
+        // single UPDATE statement, no entity loaded into memory at all
+        [HttpPatch("deactivate-department-fast")]
+        public async Task<IActionResult> DeactivateDepartmentFast(string department)
+        {
+            var updated = await db.Employees
+                .Where(e => e.Department == department)
+                .ExecuteUpdateAsync(s => s
+                    .SetProperty(e => e.IsActive, false)
+                    .SetProperty(e => e.Department, e => e.Department + " (Inactive)"));
+
+            return Ok(new { RowsUpdated = updated });
+        }
+
+        // ✅ FAST — ExecuteDelete (EF 7+)
+        // single DELETE statement
+        [HttpDelete("delete-old-orders")]
+        public async Task<IActionResult> DeleteOldOrders([FromQuery] int olderThanDays)
+        {
+            var cutoff = DateTime.UtcNow.AddDays(-olderThanDays);
+
+            var deleted = await db.Orders
+                .Where(o => o.OrderDate < cutoff && o.Status == "Completed")
+                .ExecuteDeleteAsync();                      // DELETE FROM Orders WHERE ...
+
+            return Ok(new { RowsDeleted = deleted });
+        }
+        #endregion
+        
         #region Private Methods
         private async Task<List<Employee>> GetEmployeesByWithOrder()
         {
+            //Example of Left join
             return await db.Employees.GroupJoin(
                 db.Orders,
                 employee => employee.Id,
